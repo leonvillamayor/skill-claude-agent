@@ -1,0 +1,16 @@
+# Local dev
+.claude/
+evals/
+Prompt/
+skill-claude-agent-workspace/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Node
+node_modules/
+
+# macOS
+.DS_Store
