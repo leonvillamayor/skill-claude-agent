@@ -33,6 +33,11 @@ The Claude Agent SDK lets you build AI agents that autonomously read files, run 
 | Build in-process tools | [Custom Tools](#custom-tools) |
 | Load skills & plugins | [Skills & Plugins](#skills--plugins) |
 | Control tool approvals | [Permissions & User Input](#permissions--user-input) |
+| Customize system prompt | [System Prompts & CLAUDE.md](#system-prompts--claudemd) |
+| Track costs & usage | [Cost Tracking](#cost-tracking) |
+| Undo file changes | [File Checkpointing](#file-checkpointing) |
+| Interrupt / stop agent | [Interrupt & Stop Reasons](#interrupt--stop-reasons) |
+| Sandbox & secure deploy | [Sandbox & Secure Deployment](#sandbox--secure-deployment) |
 | Deploy to production | [Authentication & Hosting](#authentication--hosting) |
 | Advanced reference | `references/` directory |
 
@@ -97,19 +102,23 @@ All options for `query()` — Python uses `snake_case`, TypeScript uses `camelCa
 | `allowed_tools` / `allowedTools` | `string[]` | Whitelist of tools Claude can use |
 | `disallowed_tools` / `disallowedTools` | `string[]` | Blacklist of tools |
 | `permission_mode` / `permissionMode` | `string` | `"default"`, `"acceptEdits"`, `"bypassPermissions"`, `"plan"` |
-| `system_prompt` / `systemPrompt` | `string` | Custom system prompt (prepended) |
+| `system_prompt` / `systemPrompt` | `string \| object` | Custom string or preset object (see [System Prompts](#system-prompts--claudemd)) |
 | `model` | `string` | Model ID or shorthand (`"sonnet"`, `"opus"`, `"haiku"`) |
 | `max_turns` / `maxTurns` | `number` | Maximum agentic turns |
+| `max_thinking_tokens` / `maxThinkingTokens` | `number` | Maximum tokens for thinking blocks |
 | `resume` | `string` | Session ID to resume |
 | `fork_session` / `forkSession` | `boolean` | Fork session instead of continuing |
 | `mcp_servers` / `mcpServers` | `object` | MCP server configurations |
 | `agents` | `object` | Subagent definitions (keyed by name) |
 | `hooks` | `object` | Hook event callbacks |
 | `can_use_tool` / `canUseTool` | `function` | Callback for runtime tool approval |
-| `setting_sources` / `settingSources` | `string[]` | Load from filesystem (`["project"]`) |
+| `setting_sources` / `settingSources` | `string[]` | Load from filesystem (`["user"`, `"project"`, `"local"]`) |
 | `cwd` | `string` | Working directory for the agent |
 | `env` | `object` | Environment variables to pass |
 | `plugins` | `array` | Programmatic plugins (slash commands, agents, MCP) |
+| `sandbox` | `object` | Sandbox settings (`enabled`, `autoAllowBashIfSandboxed`, `network`) |
+| `enable_file_checkpointing` / `enableFileCheckpointing` | `boolean` | Enable file change tracking for rewind |
+| `extra_args` / `extraArgs` | `object` | Additional CLI arguments to pass |
 
 ### Built-in Tools Reference
 
@@ -126,6 +135,8 @@ All options for `query()` — Python uses `snake_case`, TypeScript uses `camelCa
 | `AskUserQuestion` | Ask user clarifying questions (multiple choice) |
 | `Task` | Invoke subagents (required when using `agents`) |
 | `Skill` | Invoke installed skills (requires `setting_sources`) |
+| `TodoWrite` | Create/manage structured task lists for progress tracking |
+| `NotebookEdit` | Edit Jupyter notebook cells (`.ipynb` files) |
 
 **Common tool combinations:**
 - Read-only: `["Read", "Glob", "Grep"]`
@@ -753,6 +764,317 @@ const options = {
 ```
 
 For declarative permission rules (settings.json), plan mode patterns, and input modification: see [references/permissions.md](references/permissions.md)
+
+---
+
+## System Prompts & CLAUDE.md
+
+### System Prompt Types
+
+The `system_prompt` option accepts either a plain string or a **preset object**:
+
+```python
+# Plain string — replaces the default system prompt entirely
+options = ClaudeAgentOptions(system_prompt="You are a security auditor.")
+
+# Preset — uses Claude Code's full system prompt + your additions
+options = ClaudeAgentOptions(
+    system_prompt={
+        "type": "preset",
+        "preset": "claude_code",
+        "append": "Always include detailed docstrings and type hints.",
+    }
+)
+```
+
+```typescript
+// TypeScript preset
+const options = {
+  systemPrompt: {
+    type: "preset",
+    preset: "claude_code",
+    append: "Always include detailed docstrings and type hints."
+  }
+};
+```
+
+The preset approach preserves all built-in Claude Code functionality (tool usage, safety, formatting) while adding domain-specific instructions. Use `append` to add requirements without losing defaults.
+
+### CLAUDE.md Files
+
+CLAUDE.md files provide persistent project-level instructions. The SDK loads them only when `setting_sources` includes `"project"`:
+
+```python
+# Required: setting_sources=["project"] to load CLAUDE.md
+options = ClaudeAgentOptions(
+    system_prompt={"type": "preset", "preset": "claude_code"},
+    setting_sources=["project"],  # Loads CLAUDE.md from cwd
+)
+```
+
+CLAUDE.md is a markdown file in the project root with guidelines, code style, commands, etc. — Claude follows these instructions automatically.
+
+### Output Styles
+
+Output styles are reusable prompt profiles stored in `.claude/output-styles/`:
+
+```python
+# Output styles are auto-loaded when setting_sources includes "user" or "project"
+options = ClaudeAgentOptions(
+    setting_sources=["user", "project"],  # Loads output styles
+)
+```
+
+Create a style file at `~/.claude/output-styles/code-reviewer.md`:
+```markdown
+---
+name: Code Reviewer
+description: Thorough code review assistant
+---
+
+You are an expert code reviewer. For every submission:
+1. Check for bugs and security issues
+2. Evaluate performance
+3. Suggest improvements
+```
+
+### Settings Precedence
+
+When multiple sources are loaded, settings merge (highest to lowest priority):
+1. Programmatic options (`agents`, `allowed_tools`) — always win
+2. Local settings (`.claude/settings.local.json`)
+3. Project settings (`.claude/settings.json`)
+4. User settings (`~/.claude/settings.json`)
+
+---
+
+## Cost Tracking
+
+The SDK provides per-message and cumulative cost/usage information.
+
+### Usage Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `input_tokens` | `number` | Base input tokens processed |
+| `output_tokens` | `number` | Tokens generated in response |
+| `cache_creation_input_tokens` | `number` | Tokens used to create cache |
+| `cache_read_input_tokens` | `number` | Tokens read from cache |
+| `total_cost_usd` | `float` | Total cost (only on `ResultMessage`) |
+
+### Tracking Costs
+
+```python
+# Python — cost tracking
+from claude_agent_sdk import query, ClaudeAgentOptions, AssistantMessage, ResultMessage
+
+async for message in query(prompt="Refactor auth.py", options=ClaudeAgentOptions()):
+    if isinstance(message, AssistantMessage) and hasattr(message, "usage"):
+        print(f"Step tokens: in={message.usage.get('input_tokens')}, out={message.usage.get('output_tokens')}")
+    elif isinstance(message, ResultMessage):
+        print(f"Total: {message.num_turns} turns, {message.duration_ms}ms")
+        if message.total_cost_usd:
+            print(f"Cost: ${message.total_cost_usd:.4f}")
+```
+
+```typescript
+// TypeScript — cost tracking
+for await (const message of query({ prompt: "Refactor auth.py" })) {
+  if (message.type === "assistant" && message.message.usage) {
+    console.log("Step tokens:", message.message.usage);
+  }
+  if (message.type === "result") {
+    console.log(`Total: ${message.num_turns} turns, ${message.duration_ms}ms`);
+    console.log(`Cost: $${message.usage?.total_cost_usd}`);
+  }
+}
+```
+
+### Subagent Costs
+
+The `Task` tool output includes usage stats for each subagent:
+```python
+# Task tool output
+{
+    "result": str,
+    "usage": {"input_tokens": int, "output_tokens": int, ...},
+    "total_cost_usd": float,
+    "duration_ms": int,
+}
+```
+
+---
+
+## File Checkpointing
+
+File checkpointing tracks file changes and allows rewinding to a previous state — useful for undoing agent modifications.
+
+### Setup
+
+```python
+import os
+from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions, UserMessage, ResultMessage
+
+options = ClaudeAgentOptions(
+    enable_file_checkpointing=True,
+    permission_mode="acceptEdits",
+    extra_args={"replay-user-messages": None},  # Required for checkpoint UUIDs
+    env={**os.environ, "CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING": "1"},
+)
+```
+
+```typescript
+const opts = {
+  enableFileCheckpointing: true,
+  permissionMode: "acceptEdits" as const,
+  extraArgs: { "replay-user-messages": null },
+  env: { ...process.env, CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING: "1" }
+};
+```
+
+### Capture Checkpoint and Rewind
+
+```python
+checkpoint_id = None
+session_id = None
+
+async with ClaudeSDKClient(options) as client:
+    await client.query("Refactor the authentication module")
+    async for message in client.receive_response():
+        # Capture first user message UUID as restore point
+        if isinstance(message, UserMessage) and message.uuid and not checkpoint_id:
+            checkpoint_id = message.uuid
+        if isinstance(message, ResultMessage):
+            session_id = message.session_id
+
+# Later — rewind all file changes
+if checkpoint_id and session_id:
+    async with ClaudeSDKClient(
+        ClaudeAgentOptions(enable_file_checkpointing=True, resume=session_id)
+    ) as client:
+        await client.query("")  # Empty prompt opens connection
+        async for message in client.receive_response():
+            await client.rewind_files(checkpoint_id)
+            break
+```
+
+```typescript
+// TypeScript — rewind
+const rewindQuery = query({
+  prompt: "",
+  options: { ...opts, resume: sessionId }
+});
+for await (const msg of rewindQuery) {
+  await rewindQuery.rewindFiles(checkpointId);
+  break;
+}
+```
+
+---
+
+## Interrupt & Stop Reasons
+
+### Interrupting a Running Task
+
+Use `client.interrupt()` to stop a long-running task mid-execution:
+
+```python
+from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions
+import asyncio
+
+async def main():
+    options = ClaudeAgentOptions(allowed_tools=["Bash"], permission_mode="acceptEdits")
+
+    async with ClaudeSDKClient(options=options) as client:
+        await client.query("Count from 1 to 100 slowly")
+        await asyncio.sleep(2)
+
+        await client.interrupt()  # Stop current task
+        print("Task interrupted!")
+
+        await client.query("Just say hello instead")  # Send new command
+        async for message in client.receive_response():
+            pass
+
+asyncio.run(main())
+```
+
+### Stop Reasons
+
+The `ResultMessage` includes a `stop_reason` field indicating why the agent stopped:
+
+| `subtype` | `stop_reason` | Meaning |
+|-----------|---------------|---------|
+| `"success"` | `"end_turn"` | Agent completed normally |
+| `"error_during_execution"` | varies | An error occurred |
+| `"error_max_turns"` | `"end_turn"` or `"tool_use"` | Hit `max_turns` limit |
+
+```python
+from claude_agent_sdk import ResultMessage
+
+async for message in query(prompt="...", options=ClaudeAgentOptions(max_turns=3)):
+    if isinstance(message, ResultMessage):
+        if message.subtype == "error_max_turns":
+            print(f"Hit turn limit. Last stop reason: {message.stop_reason}")
+```
+
+---
+
+## Sandbox & Secure Deployment
+
+### Sandbox Settings
+
+Run the agent in a sandboxed environment with restricted capabilities:
+
+```python
+from claude_agent_sdk import query, ClaudeAgentOptions
+
+options = ClaudeAgentOptions(
+    sandbox={
+        "enabled": True,
+        "autoAllowBashIfSandboxed": True,  # Auto-approve Bash when sandboxed
+        "network": {"allowLocalBinding": True},
+    }
+)
+
+async for message in query(prompt="Build and test my project", options=options):
+    print(message)
+```
+
+```typescript
+const options = {
+  sandbox: {
+    enabled: true,
+    autoAllowBashIfSandboxed: true,
+    network: { allowLocalBinding: true }
+  }
+};
+```
+
+### Docker Security Hardening
+
+For production deployments, run agents in hardened containers:
+
+```bash
+docker run \
+  --cap-drop ALL \
+  --security-opt no-new-privileges \
+  --read-only \
+  --tmpfs /tmp:rw,noexec,nosuid,size=100m \
+  --tmpfs /home/agent:rw,noexec,nosuid,size=500m \
+  --network none \
+  --memory 2g --cpus 2 --pids-limit 100 \
+  --user 1000:1000 \
+  -v /path/to/code:/workspace:ro \
+  agent-image
+```
+
+Key security measures:
+- `--cap-drop ALL` — remove all Linux capabilities
+- `--read-only` — immutable root filesystem
+- `--network none` — no network access (use Unix socket for API)
+- `--user 1000:1000` — non-root execution
+- Resource limits (`--memory`, `--cpus`, `--pids-limit`)
 
 ---
 
