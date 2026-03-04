@@ -19,13 +19,20 @@ The Claude Agent SDK (Python: `claude-agent-sdk`, TypeScript: `@anthropic-ai/cla
 
 | Feature | What it enables |
 |---------|----------------|
-| **query() / Built-in tools** | Read, Write, Edit, Bash, Glob, Grep, WebSearch, WebFetch |
+| **query() / Built-in tools** | Read, Write, Edit, Bash, Glob, Grep, WebSearch, WebFetch, TodoWrite, NotebookEdit, ListMcpResources, ReadMcpResource |
+| **ClaudeSDKClient** | Multi-turn client with dynamic model/permission changes, interrupt, MCP status, server info |
 | **Hooks** | PreToolUse, PostToolUse, Stop, Notification, SubagentStart/Stop, and more |
 | **Sessions** | Resume multi-turn conversations, fork for parallel exploration |
 | **Subagents** | Spawn specialized agents with isolated context and tool restrictions |
 | **MCP Servers** | Connect to databases, browsers, APIs via Model Context Protocol |
 | **Custom Tools** | In-process tool servers using `createSdkMcpServer` / `create_sdk_mcp_server` |
-| **Permissions** | `acceptEdits`, `bypassPermissions`, `plan` modes + `canUseTool` callback |
+| **Skills & Plugins** | Load skills from filesystem, invoke via Skill tool, programmatic plugins |
+| **Permissions** | `default`, `acceptEdits`, `bypassPermissions`, `plan`, `dontAsk` modes + `canUseTool` callback |
+| **System Prompts** | String, preset objects, CLAUDE.md integration, output styles |
+| **Cost Tracking** | Per-message and cumulative token/cost tracking |
+| **File Checkpointing** | Track file changes and rewind to previous state |
+| **Interrupt & Stop** | Cancel running tasks, handle stop reasons |
+| **Sandbox** | Sandboxed execution with network/capability restrictions |
 | **Authentication** | Anthropic API, Amazon Bedrock, Google Vertex AI, Azure AI Foundry |
 
 ## Skill Structure
@@ -47,10 +54,11 @@ skill-claude-agent/
 
 This skill activates when you:
 - Build agents with `claude_agent_sdk` or `@anthropic-ai/claude-agent-sdk`
-- Use `query()`, `ClaudeAgentOptions`, `AgentDefinition`, hooks, sessions, or subagents
-- Connect MCP servers to Claude agents
-- Implement permission controls or approval flows
-- Ask about "Claude agent", "agent SDK", or autonomous Claude workflows
+- Use `query()`, `ClaudeSDKClient`, `ClaudeAgentOptions`, `AgentDefinition`, hooks, sessions, or subagents
+- Connect MCP servers or custom tools to Claude agents
+- Implement permission controls, `canUseTool` callbacks, or tool restrictions
+- Work with skills, plugins, system prompts, cost tracking, or file checkpointing
+- Ask about "Claude agent", "agent SDK", "agentic loop", or autonomous Claude workflows
 
 ## SDK Quick Start
 
