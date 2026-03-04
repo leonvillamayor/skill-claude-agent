@@ -41,6 +41,15 @@ options = ClaudeAgentOptions(
 )
 ```
 
+### dontAsk
+- Auto-approve all tools without prompting (never show permission dialogs)
+- Unlike `bypassPermissions`, this mode denies tools that are not pre-approved rather than approving everything
+- Best for fully autonomous agents where you want to avoid any user interaction
+
+```python
+options = ClaudeAgentOptions(permission_mode="dontAsk")
+```
+
 ### plan
 - No tool execution at all
 - Claude can analyze files and create plans
@@ -196,6 +205,27 @@ async def can_use_tool(tool_name, input_data, context):
         reason = input("Reason for denial: ")
         return PermissionResultDeny(message=reason or "User denied")
 ```
+
+## Permission Updates via canUseTool (TypeScript)
+
+The `PermissionResultAllow` return can include `updatedPermissions` to dynamically modify rules:
+
+```typescript
+return {
+  behavior: "allow",
+  updatedInput: input,
+  updatedPermissions: {
+    addRules: [{ tool: "Bash(*)", permission: "allow" }],
+    replaceRules: [{ tool: "Read(*)", permission: "allow" }],
+    removeRules: [{ tool: "Write(/tmp/*)" }],
+    setMode: "acceptEdits",
+    addDirectories: ["/new/path"],
+    removeDirectories: ["/old/path"],
+  }
+};
+```
+
+**Destinations:** Updates can target `"userSettings"`, `"projectSettings"`, `"localSettings"`, `"session"`, or `"cliArg"`.
 
 ## Declarative Rules (settings.json)
 

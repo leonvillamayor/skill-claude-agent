@@ -140,6 +140,59 @@ File checkpointing lets you:
 - Diff changes made during a session
 - Revert to a previous snapshot
 
+## Session Discovery (TypeScript)
+
+TypeScript provides functions to list past sessions and read transcripts:
+
+```typescript
+import { listSessions, getSessionMessages } from "@anthropic-ai/claude-agent-sdk";
+
+// List sessions (with optional filters)
+const sessions = await listSessions({ dir: "/path/to/project", limit: 20 });
+// SDKSessionInfo: sessionId, summary, lastModified, fileSize, customTitle?, firstPrompt?, gitBranch?, cwd?
+
+// Read transcript with pagination
+const messages = await getSessionMessages(sessions[0].sessionId, { limit: 50, offset: 0 });
+```
+
+## Additional Session Options
+
+### continue_conversation
+Continue the most recent conversation (instead of specifying a session ID):
+```python
+options = ClaudeAgentOptions(continue_conversation=True)
+```
+
+### TypeScript-only session options
+```typescript
+const options = {
+  sessionId: "custom-uuid-here",       // Use a specific UUID
+  persistSession: false,                // Don't save session to disk
+  resumeSessionAt: "message-uuid",     // Resume at a specific message in the transcript
+};
+```
+
+## V2 Preview Sessions (TypeScript — Unstable)
+
+The V2 API provides a session-based interface:
+
+```typescript
+import { unstable_v2_createSession, unstable_v2_resumeSession } from "@anthropic-ai/claude-agent-sdk";
+
+// Create
+const session = await unstable_v2_createSession({ allowedTools: ["Read"] });
+session.send("Hello");
+for await (const msg of session.stream()) { ... }
+
+// Resume
+const resumed = await unstable_v2_resumeSession(session.sessionId, { allowedTools: ["Read"] });
+resumed.send("Continue");
+for await (const msg of resumed.stream()) { ... }
+
+// Cleanup (also supports `await using`)
+await session.close();
+```
+
 ## Conversation Compaction
 
 When conversations grow long, the SDK automatically compacts them (summarizes early turns).

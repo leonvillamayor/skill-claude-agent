@@ -11,7 +11,8 @@ description: |
   - Debugging or optimizing agent behavior, streaming, sessions, or hooks
   - Any mention of "Claude agent", "agent SDK", "agentic loop", or autonomous Claude workflows
   Covers the full SDK: query API, built-in tools, hooks lifecycle, session management, subagents,
-  MCP servers, custom in-process tools, permission modes, user input flows, and authentication.
+  MCP servers, custom in-process tools, permission modes, user input flows, structured outputs,
+  thinking config, effort levels, V2 preview API, session discovery, error handling, and authentication.
 ---
 
 # Claude Agent SDK — Complete Guide
@@ -38,8 +39,14 @@ The Claude Agent SDK lets you build AI agents that autonomously read files, run 
 | Undo file changes | [File Checkpointing](#file-checkpointing) |
 | Interrupt / stop agent | [Interrupt & Stop Reasons](#interrupt--stop-reasons) |
 | Multi-turn client | [ClaudeSDKClient](#claudesdkclient-multi-turn-client) |
+| Structured output | [Structured Outputs](#structured-outputs) |
+| Thinking & effort | [Thinking & Effort](#thinking--effort) |
 | Sandbox & secure deploy | [Sandbox & Secure Deployment](#sandbox--secure-deployment) |
 | Deploy to production | [Authentication & Hosting](#authentication--hosting) |
+| Session discovery | [Session Discovery](#session-discovery) |
+| V2 Preview API (TS) | [TypeScript V2 Preview](#typescript-v2-preview) |
+| Query object methods (TS) | [Query Object Methods (TS)](#query-object-methods-ts) |
+| Error handling | [Error Types](#error-types) |
 | Advanced reference | `references/` directory |
 
 ---
@@ -102,14 +109,21 @@ All options for `query()` — Python uses `snake_case`, TypeScript uses `camelCa
 |---|---|---|
 | `allowed_tools` / `allowedTools` | `string[]` | Whitelist of tools Claude can use |
 | `disallowed_tools` / `disallowedTools` | `string[]` | Blacklist of tools |
+| `tools` | `string[] \| ToolsPreset` | Alternative to `allowed_tools`; also accepts presets |
 | `permission_mode` / `permissionMode` | `string` | `"default"`, `"acceptEdits"`, `"bypassPermissions"`, `"plan"`, `"dontAsk"` |
 | `system_prompt` / `systemPrompt` | `string \| object` | Custom string or preset object (see [System Prompts](#system-prompts--claudemd)) |
 | `model` | `string` | Model ID or shorthand (`"sonnet"`, `"opus"`, `"haiku"`) |
+| `fallback_model` / `fallbackModel` | `string` | Fallback model if primary is unavailable |
 | `max_turns` / `maxTurns` | `number` | Maximum agentic turns |
-| `max_thinking_tokens` / `maxThinkingTokens` | `number` | Maximum tokens for thinking blocks |
+| `max_budget_usd` / `maxBudgetUsd` | `float` | Maximum spend in USD per query (triggers `error_max_budget_usd` on exceed) |
+| `thinking` | `object` | Thinking config: `{type:"adaptive"}`, `{type:"enabled",budget_tokens:N}`, `{type:"disabled"}` |
+| `effort` | `string` | Thinking depth: `"low"`, `"medium"`, `"high"`, `"max"` |
+| `max_thinking_tokens` / `maxThinkingTokens` | `number` | **Deprecated** — use `thinking` instead |
+| `output_format` / `outputFormat` | `object` | Structured output schema: `{type:"json_schema", schema:{...}}` |
 | `resume` | `string` | Session ID to resume |
 | `fork_session` / `forkSession` | `boolean` | Fork session instead of continuing |
-| `mcp_servers` / `mcpServers` | `object` | MCP server configurations |
+| `continue_conversation` / `continue` | `boolean` | Continue most recent conversation |
+| `mcp_servers` / `mcpServers` | `object \| string` | MCP server configurations (inline object or path to `.mcp.json`) |
 | `agents` | `object` | Subagent definitions (keyed by name) |
 | `hooks` | `object` | Hook event callbacks |
 | `can_use_tool` / `canUseTool` | `function` | Callback for runtime tool approval |
@@ -117,27 +131,54 @@ All options for `query()` — Python uses `snake_case`, TypeScript uses `camelCa
 | `cwd` | `string` | Working directory for the agent |
 | `env` | `object` | Environment variables to pass |
 | `plugins` | `array` | Programmatic plugins (slash commands, agents, MCP) |
-| `sandbox` | `object` | Sandbox settings (`enabled`, `autoAllowBashIfSandboxed`, `network`) |
+| `sandbox` | `object` | Sandbox settings (see [Sandbox](#sandbox--secure-deployment)) |
 | `enable_file_checkpointing` / `enableFileCheckpointing` | `boolean` | Enable file change tracking for rewind |
 | `extra_args` / `extraArgs` | `object` | Additional CLI arguments to pass |
+| `betas` | `string[]` | Beta features (e.g., `["context-1m-2025-08-07"]` for 1M context window) |
+| `add_dirs` / `additionalDirectories` | `string[]` | Additional directories Claude can access |
+| `user` | `string` | User identifier (for logging/tracking) |
+| `cli_path` / `cliPath` | `string` | Custom path to Claude CLI binary |
+| `include_partial_messages` / `includePartialMessages` | `boolean` | Include partial streaming messages |
+| `stderr` | `function` | Custom stderr handler callback |
+
+**TypeScript-only options:**
+
+| Option (TS only) | Type | Description |
+|---|---|---|
+| `sessionId` | `string` | Use a specific UUID for the session |
+| `persistSession` | `boolean` | Disable disk persistence (`false` to skip saving) |
+| `resumeSessionAt` | `string` | Resume at a specific message UUID |
+| `promptSuggestions` | `boolean` | Enable `SDKPromptSuggestionMessage` after each turn |
+| `abortController` | `AbortController` | For cancelling operations externally |
+| `agent` | `string` | Agent name for the main thread |
+| `debug` / `debugFile` | `boolean` / `string` | Enable debug mode / write debug logs to file |
+| `spawnClaudeCodeProcess` | `function` | Custom process spawning (VMs, containers, remote) |
+| `allowDangerouslySkipPermissions` | `boolean` | Required when using `bypassPermissions` |
+| `strictMcpConfig` | `boolean` | Enforce strict MCP server validation |
+| `executable` / `executableArgs` | `string` / `string[]` | JS runtime (`"bun"`, `"deno"`, `"node"`) and args |
 
 ### Built-in Tools Reference
 
 | Tool | Purpose |
 |------|---------|
-| `Read` | Read any file |
+| `Read` | Read any file (text, image, PDF, Jupyter notebooks) |
 | `Write` | Create new files |
-| `Edit` | Precise edits to existing files |
-| `Bash` | Run terminal commands, scripts, git |
+| `Edit` | Precise string replacements in existing files |
+| `Bash` | Run terminal commands, scripts, git (supports background execution) |
 | `Glob` | Find files by pattern (`**/*.ts`) |
-| `Grep` | Search file contents with regex |
+| `Grep` | Search file contents with regex (ripgrep-based) |
 | `WebSearch` | Search the web |
 | `WebFetch` | Fetch and parse web pages |
 | `AskUserQuestion` | Ask user clarifying questions (multiple choice) |
 | `Task` | Invoke subagents (required when using `agents`) |
+| `TaskOutput` | Retrieve output from background tasks |
+| `TaskStop` | Stop a running background task |
 | `Skill` | Invoke installed skills (requires `setting_sources`) |
 | `TodoWrite` | Create/manage structured task lists for progress tracking |
 | `NotebookEdit` | Edit Jupyter notebook cells (`.ipynb` files) |
+| `Config` | Get/set agent configuration values |
+| `ExitPlanMode` | Exit planning mode with optional allowed prompts |
+| `EnterWorktree` | Create and enter a git worktree for isolated work |
 | `ListMcpResources` | List available resources from configured MCP servers |
 | `ReadMcpResource` | Read a specific resource from an MCP server by URI |
 
@@ -188,7 +229,33 @@ for await (const message of query({ prompt: "..." })) {
 }
 ```
 
-**Result subtypes:** `"success"` | `"error_during_execution"` | `"max_turns_reached"`
+**Result subtypes:** `"success"` | `"error_during_execution"` | `"error_max_turns"` | `"error_max_budget_usd"` | `"error_max_structured_output_retries"`
+
+**ResultMessage extended fields:**
+- `result` — Final text output
+- `stop_reason` — `"end_turn"` or `"tool_use"`
+- `num_turns`, `duration_ms`, `total_cost_usd`
+- `session_id` — For session resumption
+- `structured_output` — Parsed JSON when using `output_format`
+- `permission_denials` — Array of `{tool_name, tool_use_id, tool_input}` for denied tools
+- `modelUsage` — Per-model usage breakdown: `{inputTokens, outputTokens, cacheReadInputTokens, cacheCreationInputTokens, webSearchRequests, costUSD, contextWindow, maxOutputTokens}`
+
+### Additional Message Types (TypeScript)
+
+TypeScript exposes additional message types beyond the core four:
+
+| Message Type | Description |
+|---|---|
+| `SDKPartialAssistantMessage` | Partial streaming message (requires `includePartialMessages`) |
+| `SDKStatusMessage` | Status updates (compacting, permission mode changes) |
+| `SDKCompactBoundaryMessage` | Marks conversation compaction boundary |
+| `SDKRateLimitEvent` | Rate limit info: `status` ("allowed" / "allowed_warning" / "rejected"), `resetsAt`, `utilization` |
+| `SDKPromptSuggestionMessage` | Prompt suggestions (requires `promptSuggestions: true`) |
+| `SDKFilesPersistedEvent` | Files persisted to disk with `files[]` and `failed[]` |
+| `SDKHookStartedMessage` / `SDKHookProgressMessage` / `SDKHookResponseMessage` | Hook execution lifecycle |
+| `SDKToolProgressMessage` / `SDKToolUseSummaryMessage` | Tool execution progress and summaries |
+| `SDKTaskStartedMessage` / `SDKTaskProgressMessage` / `SDKTaskNotificationMessage` | Background task lifecycle |
+| `SDKAuthStatusMessage` | Authentication status updates |
 
 ---
 
@@ -408,12 +475,36 @@ for await (const message of query({
 
 ### AgentDefinition Fields
 
-| Field | Required | Description |
-|-------|----------|-------------|
-| `description` | ✅ | When to use this agent (determines auto-invocation) |
-| `prompt` | ✅ | Subagent's system prompt / expertise |
-| `tools` | ❌ | Allowed tools (omit to inherit all) |
-| `model` | ❌ | `"sonnet"`, `"opus"`, `"haiku"`, or `"inherit"` |
+| Field | Required | Python / TS | Description |
+|-------|----------|-------------|-------------|
+| `description` | ✅ | Both | When to use this agent (determines auto-invocation) |
+| `prompt` | ✅ | Both | Subagent's system prompt / expertise |
+| `tools` | ❌ | Both | Allowed tools (omit to inherit all) |
+| `model` | ❌ | Both | `"sonnet"`, `"opus"`, `"haiku"`, `"inherit"`, or model ID |
+| `disallowed_tools` / `disallowedTools` | ❌ | TS | Blacklist tools for this subagent |
+| `mcp_servers` / `mcpServers` | ❌ | TS | Subagent-specific MCP servers |
+| `skills` | ❌ | TS | Skills this subagent can access |
+| `max_turns` / `maxTurns` | ❌ | TS | Turn limit for this subagent |
+
+### Task Tool Extended Input (TS)
+
+When invoking subagents via the `Task` tool, TypeScript supports additional parameters:
+
+```typescript
+// Task tool input supports these fields:
+{
+  description: "Short task description",
+  prompt: "Detailed task instructions",
+  subagent_type: "code-reviewer",    // Agent name
+  model: "sonnet",                    // Override model
+  run_in_background: true,            // Run as background task
+  resume: "agent-session-id",         // Resume a previous subagent
+  max_turns: 10,                      // Limit turns
+  isolation: "worktree",              // Run in isolated git worktree
+  name: "review-task-1",             // Task identifier
+  team_name: "reviewers",            // Team grouping
+}
+```
 
 **Notes:**
 - Subagents cannot spawn their own subagents (don't add `"Task"` to subagent tools)
@@ -473,6 +564,7 @@ const options = {
 | **HTTP** | Remote REST APIs | `type: "http"`, `url`, `headers` |
 | **SSE** | Remote streaming APIs | `type: "sse"`, `url`, `headers` |
 | **SDK MCP** | In-process custom tools | See [Custom Tools](#custom-tools) |
+| **claudeai-proxy** (TS) | Claude.ai proxy servers | `type: "claudeai-proxy"`, `url`, `id` |
 
 ```python
 # Remote SSE server with auth
@@ -499,6 +591,27 @@ env={"ENABLE_TOOL_SEARCH": "true"}    # always on
 env={"ENABLE_TOOL_SEARCH": "false"}   # always load all upfront
 ```
 *Requires: claude-sonnet-4 or claude-opus-4+. Not available on Haiku.*
+
+### Dynamic MCP Management (TypeScript)
+
+The TypeScript `Query` object supports runtime MCP server control:
+
+```typescript
+const q = query({ prompt: "...", options });
+
+// Replace all MCP servers dynamically
+const result = await q.setMcpServers({
+  "new-server": { command: "npx", args: ["-y", "some-mcp-server"] }
+});
+// result: { added: ["new-server"], removed: ["old-server"], errors: [] }
+
+// Reconnect a failed server
+await q.reconnectMcpServer("github");
+
+// Enable/disable a server
+await q.toggleMcpServer("github", false);  // disable
+await q.toggleMcpServer("github", true);   // re-enable
+```
 
 For .mcp.json config files and error handling patterns: see [references/mcp.md](references/mcp.md)
 
@@ -767,6 +880,36 @@ const options = {
 };
 ```
 
+### Permission Updates via canUseTool (TypeScript)
+
+The `canUseTool` callback can return `updatedPermissions` to dynamically modify permission rules:
+
+```typescript
+const options = {
+  canUseTool: async (toolName: string, input: any) => {
+    return {
+      behavior: "allow",
+      updatedInput: input,
+      updatedPermissions: {
+        // Add new permission rules
+        addRules: [{ tool: "Bash(*)", permission: "allow" }],
+        // Replace all rules
+        replaceRules: [{ tool: "Read(*)", permission: "allow" }],
+        // Remove specific rules
+        removeRules: [{ tool: "Write(/tmp/*)" }],
+        // Change permission mode
+        setMode: "acceptEdits",
+        // Add/remove accessible directories
+        addDirectories: ["/new/path"],
+        removeDirectories: ["/old/path"],
+      }
+    };
+  }
+};
+```
+
+Permission update destinations: `"userSettings"`, `"projectSettings"`, `"localSettings"`, `"session"`, `"cliArg"` (TS).
+
 For declarative permission rules (settings.json), plan mode patterns, and input modification: see [references/permissions.md](references/permissions.md)
 
 ---
@@ -909,6 +1052,118 @@ The `Task` tool output includes usage stats for each subagent:
 
 ---
 
+## Structured Outputs
+
+Force Claude to return structured JSON matching a schema. The result appears in `ResultMessage.structured_output`.
+
+```python
+# Python — JSON Schema
+options = ClaudeAgentOptions(
+    output_format={
+        "type": "json_schema",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "summary": {"type": "string"},
+                "issues": {"type": "array", "items": {"type": "object", "properties": {
+                    "severity": {"type": "string", "enum": ["low", "medium", "high", "critical"]},
+                    "description": {"type": "string"},
+                    "file": {"type": "string"},
+                    "line": {"type": "integer"},
+                }, "required": ["severity", "description"]}},
+            },
+            "required": ["summary", "issues"],
+        }
+    },
+    allowed_tools=["Read", "Glob", "Grep"],
+)
+
+async for message in query(prompt="Analyze auth.py for security issues", options=options):
+    if hasattr(message, "structured_output") and message.structured_output:
+        import json
+        result = json.loads(message.structured_output)
+        for issue in result["issues"]:
+            print(f"[{issue['severity']}] {issue['description']}")
+```
+
+```typescript
+// TypeScript — Zod schema (also supports raw JSON Schema)
+import { z } from "zod";
+
+const options = {
+  outputFormat: {
+    type: "json_schema" as const,
+    schema: z.object({
+      summary: z.string(),
+      issues: z.array(z.object({
+        severity: z.enum(["low", "medium", "high", "critical"]),
+        description: z.string(),
+        file: z.string().optional(),
+        line: z.number().optional(),
+      })),
+    })
+  },
+  allowedTools: ["Read", "Glob", "Grep"]
+};
+
+for await (const msg of query({ prompt: "Analyze auth.py", options })) {
+  if (msg.type === "result" && msg.structured_output) {
+    const result = JSON.parse(msg.structured_output);
+    console.log(result.issues);
+  }
+}
+```
+
+If Claude can't match the schema after retries, the result subtype is `"error_max_structured_output_retries"`.
+
+---
+
+## Thinking & Effort
+
+Control Claude's extended thinking behavior. The `thinking` option replaces the deprecated `max_thinking_tokens`.
+
+### Thinking Config
+
+```python
+# Adaptive (default) — Claude decides when to think
+options = ClaudeAgentOptions(thinking={"type": "adaptive"})
+
+# Fixed budget — always think with N tokens
+options = ClaudeAgentOptions(thinking={"type": "enabled", "budget_tokens": 10000})
+
+# Disabled — no extended thinking
+options = ClaudeAgentOptions(thinking={"type": "disabled"})
+```
+
+```typescript
+const options = { thinking: { type: "adaptive" as const } };
+const options2 = { thinking: { type: "enabled" as const, budget_tokens: 10000 } };
+const options3 = { thinking: { type: "disabled" as const } };
+```
+
+### Effort Levels
+
+A simpler alternative to thinking config — controls thinking depth:
+
+```python
+options = ClaudeAgentOptions(effort="high")   # "low", "medium", "high", "max"
+```
+
+```typescript
+const options = { effort: "high" as const };  // "low" | "medium" | "high" | "max"
+```
+
+### Betas
+
+Enable experimental SDK features:
+
+```python
+# 1M token context window (compatible with Opus 4.6, Sonnet 4.5, Sonnet 4)
+options = ClaudeAgentOptions(betas=["context-1m-2025-08-07"])
+```
+
+---
+
 ## File Checkpointing
 
 File checkpointing tracks file changes and allows rewinding to a previous state — useful for undoing agent modifications.
@@ -1012,6 +1267,8 @@ The `ResultMessage` includes a `stop_reason` field indicating why the agent stop
 | `"success"` | `"end_turn"` | Agent completed normally |
 | `"error_during_execution"` | varies | An error occurred |
 | `"error_max_turns"` | `"end_turn"` or `"tool_use"` | Hit `max_turns` limit |
+| `"error_max_budget_usd"` | varies | Hit `max_budget_usd` spend cap |
+| `"error_max_structured_output_retries"` | varies | Failed to match `output_format` schema |
 
 ```python
 from claude_agent_sdk import ResultMessage
@@ -1148,8 +1405,17 @@ from claude_agent_sdk import query, ClaudeAgentOptions
 options = ClaudeAgentOptions(
     sandbox={
         "enabled": True,
-        "autoAllowBashIfSandboxed": True,  # Auto-approve Bash when sandboxed
-        "network": {"allowLocalBinding": True},
+        "autoAllowBashIfSandboxed": True,
+        "network": {
+            "allowLocalBinding": True,
+            "allowedDomains": ["api.example.com"],
+            "allowManagedDomainsOnly": False,
+        },
+        "filesystem": {
+            "allowWrite": ["/workspace"],
+            "denyWrite": ["/etc", "/usr"],
+            "denyRead": ["/secrets"],
+        },
     }
 )
 
@@ -1162,10 +1428,34 @@ const options = {
   sandbox: {
     enabled: true,
     autoAllowBashIfSandboxed: true,
-    network: { allowLocalBinding: true }
+    excludedCommands: ["rm -rf /"],           // Block specific commands
+    network: {
+      allowLocalBinding: true,
+      allowedDomains: ["api.example.com"],
+      allowUnixSockets: false,
+    },
+    filesystem: {
+      allowWrite: ["/workspace"],
+      denyWrite: ["/etc", "/usr"],
+      denyRead: ["/secrets"],
+    },
   }
 };
 ```
+
+**Sandbox settings:**
+| Field | Description |
+|---|---|
+| `enabled` | Enable sandbox |
+| `autoAllowBashIfSandboxed` | Auto-approve Bash when sandboxed |
+| `excludedCommands` | Block specific bash commands |
+| `network.allowLocalBinding` | Allow binding local ports |
+| `network.allowedDomains` | Whitelist of allowed domains |
+| `network.allowManagedDomainsOnly` | Only allow managed domains |
+| `network.allowUnixSockets` / `allowAllUnixSockets` | Unix socket access |
+| `filesystem.allowWrite` | Writable paths |
+| `filesystem.denyWrite` | Read-only paths |
+| `filesystem.denyRead` | Inaccessible paths |
 
 ### Docker Security Hardening
 
@@ -1215,6 +1505,23 @@ export CLAUDE_CODE_USE_FOUNDRY=1
 # Configure Azure credentials
 ```
 
+### SDK vs CLI Authentication
+
+The SDK requires API keys — subscription-based OAuth login (Claude Pro/Max/Team) is **not officially supported** for the Agent SDK. The `CLAUDE_CODE_OAUTH_TOKEN` environment variable works only for the interactive CLI.
+
+| | Interactive CLI (`claude`) | Agent SDK |
+|---|---|---|
+| API key | ✅ | ✅ |
+| OAuth / subscription login | ✅ | ❌ Not supported |
+| Bedrock / Vertex / Foundry | ✅ | ✅ |
+
+**Dynamic API key rotation** (for vaults/secret managers):
+```python
+# In .claude/settings.json or via setting_sources
+# "apiKeyHelper": "my-script-that-returns-api-key"
+# CLAUDE_CODE_API_KEY_HELPER_TTL_MS controls refresh interval
+```
+
 ### Docker Deployment
 
 ```dockerfile
@@ -1235,6 +1542,214 @@ options = ClaudeAgentOptions(setting_sources=["project"])
 ```
 
 Available setting sources: `"project"` (`.claude/`), `"user"` (~/.claude/), `"mcpServers"`
+
+---
+
+## Session Discovery
+
+TypeScript provides functions to list past sessions and read their transcripts:
+
+```typescript
+import { listSessions, getSessionMessages } from "@anthropic-ai/claude-agent-sdk";
+
+// List past sessions with metadata
+const sessions = await listSessions({ dir: "/path/to/project", limit: 10 });
+for (const session of sessions) {
+  console.log(`${session.sessionId}: ${session.summary}`);
+  console.log(`  Branch: ${session.gitBranch}, Last modified: ${session.lastModified}`);
+}
+
+// Read session transcript with pagination
+const messages = await getSessionMessages(sessions[0].sessionId, {
+  limit: 50,
+  offset: 0,
+});
+for (const msg of messages) {
+  console.log(msg);
+}
+```
+
+**`SDKSessionInfo` fields:** `sessionId`, `summary`, `lastModified`, `fileSize`, `customTitle?`, `firstPrompt?`, `gitBranch?`, `cwd?`
+
+---
+
+## TypeScript V2 Preview
+
+The V2 API provides a simpler session-based interface (unstable — may change):
+
+```typescript
+import {
+  unstable_v2_createSession,
+  unstable_v2_resumeSession,
+  unstable_v2_prompt,
+} from "@anthropic-ai/claude-agent-sdk";
+
+// Create a session
+const session = await unstable_v2_createSession({
+  allowedTools: ["Read", "Glob"],
+  permissionMode: "bypassPermissions",
+});
+
+// Send messages and stream responses
+session.send("What files are in this directory?");
+for await (const msg of session.stream()) {
+  if (msg.type === "result") console.log(msg.result);
+}
+
+// Resume later
+const resumed = await unstable_v2_resumeSession(session.sessionId, {
+  allowedTools: ["Read", "Glob"],
+});
+resumed.send("Now count the TypeScript files");
+for await (const msg of resumed.stream()) {
+  if (msg.type === "result") console.log(msg.result);
+}
+
+// Close (also supports `await using` for auto-cleanup)
+await session.close();
+
+// One-shot convenience function (returns ResultMessage directly)
+const result = await unstable_v2_prompt("Hello!", {
+  allowedTools: ["Read"],
+  permissionMode: "bypassPermissions",
+});
+console.log(result.result);
+```
+
+---
+
+## Query Object Methods (TS)
+
+The TypeScript `Query` object (returned by `query()`) exposes additional methods beyond streaming:
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `interrupt()` | `void` | Cancel the current running task |
+| `rewindFiles(userMessageId, opts?)` | `RewindFilesResult` | Restore files to checkpoint (`canRewind`, `filesChanged`, `insertions`, `deletions`) |
+| `setPermissionMode(mode)` | `void` | Change permission mode dynamically |
+| `setModel(model?)` | `void` | Change model (`null` to reset to default) |
+| `initializationResult()` | `SDKControlInitializeResponse` | Returns init data: `commands`, `agents`, `output_style`, `available_output_styles`, `models`, `account` |
+| `supportedCommands()` | `SlashCommand[]` | List of available slash commands (`name`, `description`, `argumentHint`) |
+| `supportedModels()` | `ModelInfo[]` | Available models with `displayName`, `supportsEffort`, `supportedEffortLevels`, `supportsAdaptiveThinking` |
+| `supportedAgents()` | `AgentInfo[]` | Available agents with `name`, `description`, `model?` |
+| `accountInfo()` | `AccountInfo` | Account details: `email?`, `organization?`, `subscriptionType?`, `apiKeySource?` |
+| `mcpServerStatus()` | `McpServerStatus[]` | Status of all MCP servers (name, status, tools, errors) |
+| `setMcpServers(servers)` | `McpSetServersResult` | Dynamically replace MCP servers (`added`, `removed`, `errors`) |
+| `reconnectMcpServer(name)` | `void` | Reconnect a failed MCP server |
+| `toggleMcpServer(name, enabled)` | `void` | Enable/disable an MCP server |
+| `stopTask(taskId)` | `void` | Stop a running background task |
+| `streamInput(stream)` | `void` | Stream input messages for multi-turn conversations |
+| `close()` | `void` | Forcefully terminate and clean up |
+
+**MCP Server Status values:** `"connected"` | `"failed"` | `"needs-auth"` | `"pending"` | `"disabled"`
+
+---
+
+## Error Types
+
+The SDK provides typed error classes for error handling:
+
+### Python Errors
+
+```python
+from claude_agent_sdk import (
+    ClaudeSDKError,         # Base error class
+    CLIConnectionError,     # Connection to CLI failed
+    CLINotFoundError,       # CLI binary not found (has cli_path attribute)
+    ProcessError,           # Process failure (has exit_code, stderr attributes)
+    CLIJSONDecodeError,     # JSON parse failure (has line, original_error attributes)
+)
+
+try:
+    async for msg in query(prompt="...", options=options):
+        pass
+except CLINotFoundError as e:
+    print(f"CLI not found at: {e.cli_path}")
+except ProcessError as e:
+    print(f"Process exited with code {e.exit_code}: {e.stderr}")
+except CLIConnectionError as e:
+    print(f"Connection failed: {e}")
+except CLIJSONDecodeError as e:
+    print(f"JSON parse error on line {e.line}: {e.original_error}")
+except ClaudeSDKError as e:
+    print(f"SDK error: {e}")
+```
+
+### TypeScript Errors
+
+```typescript
+import { AbortError } from "@anthropic-ai/claude-agent-sdk";
+
+try {
+  for await (const msg of query({ prompt: "...", options })) { /* ... */ }
+} catch (e) {
+  if (e instanceof AbortError) {
+    console.log("Query was aborted");
+  }
+}
+```
+
+### AssistantMessage Error Types
+
+When an `AssistantMessage` contains an error, the `error` field has a `type`:
+`"authentication_failed"` | `"billing_error"` | `"rate_limit"` | `"invalid_request"` | `"server_error"` | `"unknown"`
+
+---
+
+## Transport & Custom Process Spawning
+
+### Custom Transport (Python)
+
+The `Transport` abstract class enables custom IPC (inter-process communication):
+
+```python
+from claude_agent_sdk import Transport
+
+class MyTransport(Transport):
+    async def connect(self): ...
+    async def write(self, data: str): ...
+    async def read_messages(self): ...    # Async iterator
+    async def close(self): ...
+    def is_ready(self) -> bool: ...
+    async def end_input(self): ...
+
+client = ClaudeSDKClient(options=options, transport=MyTransport())
+```
+
+### DirectConnectTransport (TypeScript)
+
+Connect to a running `claude server` via WebSocket:
+
+```typescript
+import { DirectConnectTransport } from "@anthropic-ai/claude-agent-sdk";
+
+const transport = new DirectConnectTransport("ws://localhost:8080");
+const q = query({ prompt: "Hello", options, transport });
+```
+
+### Custom Process Spawning (TypeScript)
+
+Run agents in VMs, containers, or remote machines:
+
+```typescript
+const options = {
+  spawnClaudeCodeProcess: (spawnOptions) => {
+    // spawnOptions: { args, env, cwd, signal }
+    const child = spawn("docker", ["run", "--rm", "-i", "agent-image", ...spawnOptions.args], {
+      env: spawnOptions.env,
+      cwd: spawnOptions.cwd,
+      signal: spawnOptions.signal,
+    });
+    return {
+      stdin: child.stdin,
+      stdout: child.stdout,
+      stderr: child.stderr,
+      exitCode: new Promise(resolve => child.on("exit", resolve)),
+      kill: () => child.kill(),
+    };
+  }
+};
+```
 
 ---
 

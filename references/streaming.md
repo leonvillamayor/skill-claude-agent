@@ -167,6 +167,57 @@ async with ClaudeSDKClient(options=options) as client:
         ...
 ```
 
+## DirectConnectTransport (TypeScript)
+
+Connect to a running `claude server` via WebSocket instead of spawning a process:
+
+```typescript
+import { DirectConnectTransport, query } from "@anthropic-ai/claude-agent-sdk";
+
+const transport = new DirectConnectTransport("ws://localhost:8080");
+const q = query({ prompt: "Hello", options, transport });
+for await (const msg of q) { console.log(msg); }
+```
+
+## Custom Process Spawning (TypeScript)
+
+Run agents in VMs, containers, or remote machines:
+
+```typescript
+const options = {
+  spawnClaudeCodeProcess: (spawnOptions) => {
+    // spawnOptions: { args, env, cwd, signal }
+    const child = spawn("docker", ["run", "--rm", "-i", "agent-image", ...spawnOptions.args], {
+      env: spawnOptions.env, cwd: spawnOptions.cwd, signal: spawnOptions.signal,
+    });
+    return {
+      stdin: child.stdin,
+      stdout: child.stdout,
+      stderr: child.stderr,
+      exitCode: new Promise(resolve => child.on("exit", resolve)),
+      kill: () => child.kill(),
+    };
+  }
+};
+```
+
+## AbortController (TypeScript)
+
+Cancel operations externally:
+
+```typescript
+const controller = new AbortController();
+const q = query({ prompt: "...", options: { ...options, abortController: controller } });
+
+setTimeout(() => controller.abort(), 5000); // Cancel after 5s
+
+try {
+  for await (const msg of q) { console.log(msg); }
+} catch (e) {
+  if (e instanceof AbortError) console.log("Aborted");
+}
+```
+
 ## TypeScript — Streaming vs Single Mode
 
 ```typescript

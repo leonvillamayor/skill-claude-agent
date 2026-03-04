@@ -95,6 +95,42 @@ custom_server = create_sdk_mcp_server(name="my-tools", version="1.0.0", tools=[m
 mcp_servers = {"my-tools": custom_server}
 ```
 
+### claudeai-proxy (TypeScript only)
+```typescript
+mcpServers: {
+  "proxy-server": {
+    type: "claudeai-proxy",
+    url: "https://proxy.example.com/mcp",
+    id: "server-id"
+  }
+}
+```
+
+## Dynamic MCP Management (TypeScript)
+
+The TypeScript `Query` object supports runtime MCP server control:
+
+```typescript
+const q = query({ prompt: "...", options });
+
+// Replace all MCP servers
+const result = await q.setMcpServers({
+  "new-server": { command: "npx", args: ["-y", "some-server"] }
+});
+// result: McpSetServersResult { added: string[], removed: string[], errors: string[] }
+
+// Reconnect a failed server
+await q.reconnectMcpServer("github");
+
+// Enable/disable a server
+await q.toggleMcpServer("github", false);
+await q.toggleMcpServer("github", true);
+
+// Get status of all servers
+const statuses = await q.mcpServerStatus();
+// McpServerStatus: name, status ("connected"|"failed"|"needs-auth"|"pending"|"disabled"), tools[], error?
+```
+
 ## Permission Patterns
 
 ```python
