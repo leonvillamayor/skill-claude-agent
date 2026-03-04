@@ -37,6 +37,7 @@ The Claude Agent SDK lets you build AI agents that autonomously read files, run 
 | Track costs & usage | [Cost Tracking](#cost-tracking) |
 | Undo file changes | [File Checkpointing](#file-checkpointing) |
 | Interrupt / stop agent | [Interrupt & Stop Reasons](#interrupt--stop-reasons) |
+| Multi-turn client | [ClaudeSDKClient](#claudesdkclient-multi-turn-client) |
 | Sandbox & secure deploy | [Sandbox & Secure Deployment](#sandbox--secure-deployment) |
 | Deploy to production | [Authentication & Hosting](#authentication--hosting) |
 | Advanced reference | `references/` directory |
@@ -101,7 +102,7 @@ All options for `query()` — Python uses `snake_case`, TypeScript uses `camelCa
 |---|---|---|
 | `allowed_tools` / `allowedTools` | `string[]` | Whitelist of tools Claude can use |
 | `disallowed_tools` / `disallowedTools` | `string[]` | Blacklist of tools |
-| `permission_mode` / `permissionMode` | `string` | `"default"`, `"acceptEdits"`, `"bypassPermissions"`, `"plan"` |
+| `permission_mode` / `permissionMode` | `string` | `"default"`, `"acceptEdits"`, `"bypassPermissions"`, `"plan"`, `"dontAsk"` |
 | `system_prompt` / `systemPrompt` | `string \| object` | Custom string or preset object (see [System Prompts](#system-prompts--claudemd)) |
 | `model` | `string` | Model ID or shorthand (`"sonnet"`, `"opus"`, `"haiku"`) |
 | `max_turns` / `maxTurns` | `number` | Maximum agentic turns |
@@ -137,6 +138,8 @@ All options for `query()` — Python uses `snake_case`, TypeScript uses `camelCa
 | `Skill` | Invoke installed skills (requires `setting_sources`) |
 | `TodoWrite` | Create/manage structured task lists for progress tracking |
 | `NotebookEdit` | Edit Jupyter notebook cells (`.ipynb` files) |
+| `ListMcpResources` | List available resources from configured MCP servers |
+| `ReadMcpResource` | Read a specific resource from an MCP server by URI |
 
 **Common tool combinations:**
 - Read-only: `["Read", "Glob", "Grep"]`
@@ -692,6 +695,7 @@ for await (const message of query({
 | `"acceptEdits"` | Auto-approves file edits + mkdir/rm/mv/cp | Trusted dev workflows |
 | `"bypassPermissions"` | All tools run without prompts | CI/CD, automation |
 | `"plan"` | No tool execution; Claude plans only | Pre-approval review |
+| `"dontAsk"` | Auto-approve all tools without prompting | Fully autonomous agents |
 
 ```python
 # Dynamic permission mode change mid-session
@@ -1020,6 +1024,118 @@ async for message in query(prompt="...", options=ClaudeAgentOptions(max_turns=3)
 
 ---
 
+## ClaudeSDKClient (Multi-Turn Client)
+
+`ClaudeSDKClient` provides a persistent connection for multi-turn conversations, dynamic control, and advanced operations like interrupt and rewind.
+
+### Constructor
+
+```python
+# Python
+from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions
+
+client = ClaudeSDKClient(
+    options=ClaudeAgentOptions(...),
+    transport=None,  # Optional custom Transport for IPC
+)
+```
+
+```typescript
+// TypeScript
+import { ClaudeSDKClient } from "@anthropic-ai/claude-agent-sdk";
+
+const client = new ClaudeSDKClient({
+  options: { ... },
+  transport: undefined  // Optional custom Transport
+});
+```
+
+The optional `transport` parameter allows a custom IPC transport (e.g., for embedding the SDK in a larger system). When omitted, the default process-based transport is used.
+
+### Method Reference
+
+| Method | Description |
+|--------|-------------|
+| `connect(prompt?)` | Initialize connection (optionally with first prompt) |
+| `query(prompt, session_id?)` | Send a prompt (starts or resumes a session) |
+| `receive_messages()` | Async iterator of all messages from current query |
+| `receive_response()` | Async iterator (alias for receive_messages) |
+| `interrupt()` | Cancel the current running task |
+| `set_permission_mode(mode)` | Change permission mode dynamically |
+| `set_model(model)` | Change model dynamically (`"sonnet"`, `"opus"`, `"haiku"`, or `None` for default) |
+| `get_mcp_status()` | Get status of all connected MCP servers |
+| `get_server_info()` | Get agent server metadata |
+| `rewind_files(user_message_id)` | Undo file changes to a checkpoint (requires `enable_file_checkpointing`) |
+| `disconnect()` | Close the connection and clean up |
+
+### Usage with Context Manager
+
+```python
+# Python — recommended: use as async context manager
+async with ClaudeSDKClient(options=options) as client:
+    await client.query("Analyze this codebase")
+    async for message in client.receive_response():
+        print(message)
+
+    # Dynamic control mid-session
+    await client.set_model("haiku")       # Switch to faster model
+    await client.set_permission_mode("acceptEdits")  # Relax permissions
+
+    await client.query("Now fix the top 3 issues")
+    async for message in client.receive_response():
+        print(message)
+
+    # Inspect MCP server health
+    status = await client.get_mcp_status()
+    print(status)  # {"server_name": {"status": "connected", ...}, ...}
+
+    # Get server info
+    info = await client.get_server_info()
+    print(info)  # {"version": "...", ...}
+```
+
+```typescript
+// TypeScript
+const client = new ClaudeSDKClient({ options });
+await client.connect("Analyze this codebase");
+
+for await (const msg of client.receiveMessages()) {
+  console.log(msg);
+}
+
+// Dynamic control
+await client.setModel("haiku");
+await client.setPermissionMode("acceptEdits");
+
+await client.query("Now fix the top 3 issues");
+for await (const msg of client.receiveMessages()) {
+  console.log(msg);
+}
+
+await client.disconnect();
+```
+
+### Dynamic Permission Mode on Query
+
+You can also change the permission mode on the `query()` async generator directly:
+
+```python
+q = query(prompt="...", options=ClaudeAgentOptions(permission_mode="default"))
+await q.set_permission_mode("acceptEdits")  # Change before iterating
+async for message in q:
+    print(message)
+```
+
+```typescript
+const q = query({ prompt: "...", options: { permissionMode: "default" } });
+await q.setPermissionMode("acceptEdits");
+for await (const msg of q) {
+  console.log(msg);
+}
+```
+
+---
+
 ## Sandbox & Secure Deployment
 
 ### Sandbox Settings
@@ -1182,6 +1298,27 @@ options = ClaudeAgentOptions(
     setting_sources=["user", "project"],  # Load skills from filesystem
     allowed_tools=["Skill", "Read", "Write", "Edit", "Bash", "Glob"],
 )
+```
+
+### Todo Progress Tracking
+```python
+# Monitor TodoWrite tool calls to track agent progress in real-time
+from claude_agent_sdk import query, ClaudeAgentOptions, AssistantMessage
+
+async for message in query(prompt="Refactor the auth module", options=ClaudeAgentOptions(
+    allowed_tools=["Read", "Edit", "Write", "Glob", "Grep", "TodoWrite"],
+)):
+    if isinstance(message, AssistantMessage):
+        for block in message.content:
+            if hasattr(block, "name") and block.name == "TodoWrite":
+                todos = block.input.get("todos", [])
+                for todo in todos:
+                    status = todo.get("status", "")
+                    label = todo.get("content", "")
+                    if status == "in_progress":
+                        print(f"  ▶ {todo.get('activeForm', label)}")
+                    elif status == "completed":
+                        print(f"  ✓ {label}")
 ```
 
 ### Session-Based Multi-Turn Workflow
