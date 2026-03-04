@@ -42,7 +42,9 @@ The Claude Agent SDK lets you build AI agents that autonomously read files, run 
 | Structured output | [Structured Outputs](#structured-outputs) |
 | Thinking & effort | [Thinking & Effort](#thinking--effort) |
 | Sandbox & secure deploy | [Sandbox & Secure Deployment](#sandbox--secure-deployment) |
+| SDK internals & IPC | [SDK Internal Architecture](#sdk-internal-architecture) |
 | Deploy to production | [Authentication & Hosting](#authentication--hosting) |
+| Use Pro/Max subscription | [Using Pro/Max Subscription with the SDK](#using-promax-subscription-with-the-sdk) |
 | Session discovery | [Session Discovery](#session-discovery) |
 | V2 Preview API (TS) | [TypeScript V2 Preview](#typescript-v2-preview) |
 | Query object methods (TS) | [Query Object Methods (TS)](#query-object-methods-ts) |
@@ -1484,6 +1486,109 @@ Key security measures:
 
 ---
 
+## SDK Internal Architecture
+
+The SDK **never calls the Anthropic API directly**. It spawns the `claude` CLI as a child subprocess and communicates via **stdin/stdout using newline-delimited JSON (NDJSON)**:
+
+```
+┌─────────────────────┐    stdin (NDJSON)          ┌──────────────────┐
+│   Your Application  │ ──────────────────────────> │                  │
+│   (Python / TS)     │                             │  claude CLI      │
+│                     │ <────────────────────────── │  (Node.js)       │
+│   SDK (Transport)   │    stdout (NDJSON)          │                  │
+│                     │                             │  Calls Anthropic │
+│                     │    stderr (debug/logs)      │  API internally  │
+└─────────────────────┘ <────────────────────────── └──────────────────┘
+```
+
+### Process Spawning
+
+**Python** — resolves the `claude` binary in order: bundled CLI (`_bundled/`), `shutil.which("claude")`, common locations (`~/.npm-global/bin/`, `/usr/local/bin/`, etc.). Spawns via `anyio.open_process()`.
+
+**TypeScript** — resolves bundled `cli.js` (in the npm package) or `pathToClaudeCodeExecutable`. If the path is a JS file, prepends `node`/`bun` as runtime. Spawns via `child_process.spawn()`.
+
+Both SDKs always pass these base CLI flags:
+```
+["--output-format", "stream-json", "--verbose", "--input-format", "stream-json"]
+```
+
+### Environment Inheritance
+
+Both SDKs **inherit all environment variables** from the parent process and add SDK-specific ones:
+
+```python
+# Python (subprocess_cli.py)
+process_env = {
+    **os.environ,                           # Inherit ALL system env vars
+    **self._options.env,                    # User-provided overrides
+    "CLAUDE_CODE_ENTRYPOINT": "sdk-py",
+    "CLAUDE_AGENT_SDK_VERSION": __version__,
+}
+```
+
+```typescript
+// TypeScript
+let env = { ...process.env };              // Inherit ALL system env vars
+// User env vars spread via options.env
+env.CLAUDE_CODE_ENTRYPOINT = "sdk-ts";
+env.CLAUDE_AGENT_SDK_VERSION = "0.2.66";
+```
+
+This means the `claude` child process receives **every auth-related variable** already set in your shell (`ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, AWS/GCP/Azure credentials, etc.).
+
+### IPC Protocol (stream-json)
+
+The SDK and CLI communicate using **bidirectional NDJSON** (one JSON object per line):
+
+**Message types (CLI → SDK via stdout):**
+
+| Type | Purpose |
+|---|---|
+| `{"type": "system", "subtype": "init"}` | Session initialization (returns `session_id`) |
+| `{"type": "assistant", "message": {...}}` | Claude's responses |
+| `{"type": "user", "message": {...}}` | Tool results |
+| `{"type": "result", "subtype": "success"}` | Final result with cost/usage |
+| `{"type": "control_request", ...}` | Permission/hook/MCP requests from CLI |
+
+**Control messages (SDK → CLI via stdin):**
+
+| Type | Purpose |
+|---|---|
+| `{"type": "user", "message": {...}}` | User prompts |
+| `{"type": "control_request", "request": {"subtype": "initialize"}}` | Handshake (register hooks, agents) |
+| `{"type": "control_request", "request": {"subtype": "interrupt"}}` | Interrupt processing |
+| `{"type": "control_response", ...}` | Responses to permission/hook/MCP requests |
+
+**Initialize handshake** (first message after spawn):
+```json
+{"type": "control_request", "request_id": "req_1", "request": {
+  "subtype": "initialize",
+  "hooks": {"PreToolUse": [{"matcher": "Edit", "hookCallbackIds": ["h0"]}]},
+  "agents": {"reviewer": {"prompt": "Review code", "tools": ["Read"]}}
+}}
+```
+
+**Permission request** (CLI asks SDK to approve a tool):
+```json
+{"type": "control_request", "request_id": "req_42", "request": {
+  "subtype": "can_use_tool", "tool_name": "Bash",
+  "input": {"command": "rm -rf /tmp/test"}
+}}
+```
+
+**Permission response** (SDK approves/denies):
+```json
+{"type": "control_response", "response": {
+  "request_id": "req_42", "subtype": "success",
+  "response": {"behavior": "allow"}
+}}
+```
+
+**Other control request subtypes (SDK → CLI):**
+`set_permission_mode`, `set_model`, `rewind_files`, `mcp_status`, `mcp_reconnect`, `mcp_toggle`, `mcp_set_servers` (TS), `stop_task`
+
+---
+
 ## Authentication & Hosting
 
 ### API Providers
@@ -1505,15 +1610,108 @@ export CLAUDE_CODE_USE_FOUNDRY=1
 # Configure Azure credentials
 ```
 
-### SDK vs CLI Authentication
+### Authentication Resolution Order
 
-The SDK requires API keys — subscription-based OAuth login (Claude Pro/Max/Team) is **not officially supported** for the Agent SDK. The `CLAUDE_CODE_OAUTH_TOKEN` environment variable works only for the interactive CLI.
+The `claude` child process resolves authentication in this priority:
 
-| | Interactive CLI (`claude`) | Agent SDK |
+| Priority | Variable | Billing |
+|---|---|---|
+| 1 | `ANTHROPIC_API_KEY` | Pay-per-use (API credits) |
+| 2 | `CLAUDE_CODE_OAUTH_TOKEN` | Subscription quota (Pro/Max/Team) |
+| 3 | `CLAUDE_CODE_USE_BEDROCK=1` | AWS Bedrock pricing |
+| 4 | `CLAUDE_CODE_USE_VERTEX=1` | Google Vertex pricing |
+| 5 | `CLAUDE_CODE_USE_FOUNDRY=1` | Azure AI Foundry pricing |
+
+### SDK vs CLI Authentication (Official)
+
+Anthropic's official position: the SDK is designed for API key authentication. OAuth/subscription login is **not officially supported** for the Agent SDK.
+
+| | Interactive CLI (`claude`) | Agent SDK (official) |
 |---|---|---|
 | API key | ✅ | ✅ |
-| OAuth / subscription login | ✅ | ❌ Not supported |
+| OAuth / subscription login | ✅ | ❌ Not officially supported |
 | Bedrock / Vertex / Foundry | ✅ | ✅ |
+
+### Using Pro/Max Subscription with the SDK
+
+Since the SDK spawns the `claude` CLI as a child process and **inherits all environment variables** (see [SDK Internal Architecture](#sdk-internal-architecture)), if `CLAUDE_CODE_OAUTH_TOKEN` is set in your shell and `ANTHROPIC_API_KEY` is **not** set, the child process will use your subscription quota.
+
+> **Warning:** This is **not officially supported** by Anthropic. It works due to the SDK's process-spawning architecture but may break in future updates. Anthropic's ToS prohibit using OAuth tokens in third-party products. Use for personal/local development only.
+
+**Step 1: Obtain your OAuth token**
+```bash
+# Login to Claude (if not already authenticated)
+claude login
+
+# Or explicitly set up the token
+claude setup-token
+# Opens browser → authenticate → token is stored
+```
+
+**Step 2: Ensure no API key overrides it**
+```bash
+# IMPORTANT: ANTHROPIC_API_KEY takes priority over OAuth token
+# Make sure it's NOT set, or the SDK will use API billing instead
+unset ANTHROPIC_API_KEY
+
+# Verify OAuth token is available
+echo $CLAUDE_CODE_OAUTH_TOKEN
+```
+
+**Step 3: Use the SDK normally**
+```python
+import os
+from claude_agent_sdk import query, ClaudeAgentOptions
+
+# Option A: OAuth token already in environment (from `claude login`)
+# The SDK inherits it automatically — nothing special needed
+async for msg in query(prompt="Hello", options=ClaudeAgentOptions()):
+    print(msg)
+```
+
+```python
+# Option B: Explicitly pass the OAuth token (useful when ANTHROPIC_API_KEY is also set)
+options = ClaudeAgentOptions(
+    env={
+        "CLAUDE_CODE_OAUTH_TOKEN": os.environ["CLAUDE_CODE_OAUTH_TOKEN"],
+        # Omit ANTHROPIC_API_KEY to force OAuth usage
+    },
+)
+async for msg in query(prompt="Hello", options=options):
+    print(msg)
+```
+
+```python
+# Option C: Remove API key at runtime to force OAuth
+import os
+os.environ.pop("ANTHROPIC_API_KEY", None)  # Remove if present
+
+async for msg in query(prompt="Hello", options=ClaudeAgentOptions()):
+    print(msg)
+```
+
+```typescript
+// TypeScript — same principle
+import { query } from "@anthropic-ai/claude-agent-sdk";
+
+// Ensure ANTHROPIC_API_KEY is not set; CLAUDE_CODE_OAUTH_TOKEN will be inherited
+delete process.env.ANTHROPIC_API_KEY;
+
+for await (const msg of query({ prompt: "Hello" })) {
+  console.log(msg);
+}
+```
+
+**Why it works:** The SDK's `SubprocessCLITransport` (Python) / `ProcessTransport` (TypeScript) builds the child environment as `{...os.environ, ...options.env}`. The `claude` process receives `CLAUDE_CODE_OAUTH_TOKEN` and, with no `ANTHROPIC_API_KEY` present, authenticates via your subscription.
+
+### Recommended Authentication for Production
+
+| Use Case | Recommended Auth |
+|---|---|
+| Personal/local development | API key or OAuth token (see above) |
+| CI/CD pipelines | `ANTHROPIC_API_KEY` or Bedrock/Vertex |
+| Commercial products | `ANTHROPIC_API_KEY` (pay-per-use) |
+| Enterprise / cloud-native | Bedrock, Vertex, or Foundry |
 
 **Dynamic API key rotation** (for vaults/secret managers):
 ```python
@@ -1698,6 +1896,17 @@ When an `AssistantMessage` contains an error, the `error` field has a `type`:
 
 ## Transport & Custom Process Spawning
 
+The SDK abstracts communication with the `claude` CLI through the Transport layer. By default, it uses a subprocess-based transport (see [SDK Internal Architecture](#sdk-internal-architecture) for the IPC protocol). You can replace or customize this.
+
+### Default Transports
+
+| SDK | Default Transport | Mechanism |
+|---|---|---|
+| Python | `SubprocessCLITransport` | `anyio.open_process()` → stdin/stdout NDJSON |
+| TypeScript | `ProcessTransport` | `child_process.spawn()` → stdin/stdout NDJSON |
+
+Both read stdout line-by-line: TypeScript uses `readline.createInterface()`, Python uses `anyio.TextReceiveStream` with a 1MB JSON buffer.
+
 ### Custom Transport (Python)
 
 The `Transport` abstract class enables custom IPC (inter-process communication):
@@ -1729,12 +1938,12 @@ const q = query({ prompt: "Hello", options, transport });
 
 ### Custom Process Spawning (TypeScript)
 
-Run agents in VMs, containers, or remote machines:
+Customize how the `claude` process is launched (VMs, containers, remote machines) while keeping the SDK's NDJSON protocol handling:
 
 ```typescript
 const options = {
   spawnClaudeCodeProcess: (spawnOptions) => {
-    // spawnOptions: { args, env, cwd, signal }
+    // spawnOptions: { command, args, env, cwd, signal }
     const child = spawn("docker", ["run", "--rm", "-i", "agent-image", ...spawnOptions.args], {
       env: spawnOptions.env,
       cwd: spawnOptions.cwd,
