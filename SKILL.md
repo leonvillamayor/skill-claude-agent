@@ -31,6 +31,7 @@ The Claude Agent SDK lets you build AI agents that autonomously read files, run 
 | Delegate to specialists | [Subagents](#subagents) |
 | Connect external APIs/DBs | [MCP Servers](#mcp-servers) |
 | Build in-process tools | [Custom Tools](#custom-tools) |
+| Load skills & plugins | [Skills & Plugins](#skills--plugins) |
 | Control tool approvals | [Permissions & User Input](#permissions--user-input) |
 | Deploy to production | [Authentication & Hosting](#authentication--hosting) |
 | Advanced reference | `references/` directory |
@@ -124,6 +125,7 @@ All options for `query()` — Python uses `snake_case`, TypeScript uses `camelCa
 | `WebFetch` | Fetch and parse web pages |
 | `AskUserQuestion` | Ask user clarifying questions (multiple choice) |
 | `Task` | Invoke subagents (required when using `agents`) |
+| `Skill` | Invoke installed skills (requires `setting_sources`) |
 
 **Common tool combinations:**
 - Read-only: `["Read", "Glob", "Grep"]`
@@ -131,6 +133,7 @@ All options for `query()` — Python uses `snake_case`, TypeScript uses `camelCa
 - Full automation: `["Read", "Edit", "Write", "Bash", "Glob", "Grep"]`
 - Web research: `["WebSearch", "WebFetch", "Read"]`
 - With subagents: add `"Task"` to any combination
+- With skills: add `"Skill"` and configure `setting_sources`
 
 ---
 
@@ -563,6 +566,111 @@ For complex schema patterns, error handling, and database/API gateway examples: 
 
 ---
 
+## Skills & Plugins
+
+Skills are reusable capability packages (`SKILL.md` files) that Claude loads on-demand based on context. The SDK can load skills from the filesystem and invoke them via the `Skill` built-in tool.
+
+### Loading Skills from Filesystem
+
+By default, the SDK does **not** load any filesystem settings (including skills). You must explicitly configure `setting_sources` to enable skill discovery.
+
+```python
+# Python — enable skills from user and project directories
+from claude_agent_sdk import query, ClaudeAgentOptions
+
+options = ClaudeAgentOptions(
+    cwd="/path/to/project",                    # Project with .claude/skills/
+    setting_sources=["user", "project"],       # Load skills from filesystem
+    allowed_tools=["Skill", "Read", "Write", "Bash"],  # Enable Skill tool
+)
+
+async for message in query(prompt="Help me process this PDF document", options=options):
+    print(message)
+```
+
+```typescript
+// TypeScript — enable skills from user and project directories
+for await (const message of query({
+  prompt: "Help me process this PDF document",
+  options: {
+    cwd: "/path/to/project",                   // Project with .claude/skills/
+    settingSources: ["user", "project"],        // Load skills from filesystem
+    allowedTools: ["Skill", "Read", "Write", "Bash"]  // Enable Skill tool
+  }
+})) {
+  console.log(message);
+}
+```
+
+### How Skills Work in the SDK
+
+1. **Filesystem artifacts**: Skills are `SKILL.md` files in `.claude/skills/` directories
+2. **Auto-discovered**: Skill metadata (name + description) is loaded at startup
+3. **Model-invoked**: Claude autonomously decides when to activate a skill based on context
+4. **On-demand loading**: Full skill content is loaded only when triggered (saves context)
+
+### Skill Discovery Locations
+
+| `setting_sources` value | Skills loaded from |
+|-------------------------|-------------------|
+| `"user"` | `~/.claude/skills/` |
+| `"project"` | `.claude/skills/` in `cwd` |
+| `"local"` | `.claude/settings.local.json` |
+
+### Discovering Available Skills
+
+```python
+# List all skills available to the agent
+options = ClaudeAgentOptions(
+    setting_sources=["user", "project"],
+    allowed_tools=["Skill"],
+)
+
+async for message in query(prompt="What Skills are available?", options=options):
+    print(message)
+```
+
+### Loading Plugins Programmatically
+
+Plugins provide skills, slash commands, and agents from local directories — without requiring them to be in `.claude/skills/`.
+
+```python
+# Python — load plugins from local paths
+async for message in query(
+    prompt="Hello",
+    options={
+        "plugins": [
+            {"type": "local", "path": "./my-plugin"},
+            {"type": "local", "path": "/absolute/path/to/another-plugin"},
+        ]
+    },
+):
+    print(message)
+```
+
+```typescript
+// TypeScript — load plugins from local paths
+for await (const message of query({
+  prompt: "Hello",
+  options: {
+    plugins: [
+      { type: "local", path: "./my-plugin" },
+      { type: "local", path: "/absolute/path/to/another-plugin" }
+    ]
+  }
+})) {
+  console.log(message);
+}
+```
+
+**Key differences between Skills and Plugins:**
+- Skills must be filesystem artifacts (`SKILL.md` files) — no programmatic registration API
+- Plugins load from any local path via the `plugins` array
+- Both require `"Skill"` in `allowed_tools` to be invokable
+- Programmatic options (`agents`, `allowed_tools`) always override filesystem settings
+
+---
+
 ## Permissions & User Input
 
 ### Permission Modes
@@ -741,6 +849,16 @@ async def audit_logger(input_data, tool_use_id, context):
 
 options = ClaudeAgentOptions(
     hooks={"PostToolUse": [HookMatcher(hooks=[audit_logger])]}
+)
+```
+
+### Skills-Enabled Agent
+```python
+# Agent that can use installed skills (PDF, XLSX, etc.)
+options = ClaudeAgentOptions(
+    cwd="/path/to/project",
+    setting_sources=["user", "project"],  # Load skills from filesystem
+    allowed_tools=["Skill", "Read", "Write", "Edit", "Bash", "Glob"],
 )
 ```
 
